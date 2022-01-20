@@ -1,44 +1,8 @@
-# PythonPerfTalk
-Notes and samples for Python performance talk
+# Performant Python - Session 1: PyAMQP
 
-First Session: Pyamqp
-- Anna: Why should we care about perf?
-- Anna: When should we care about perf?
--   Pyamqp: Considerations on multiple levels: Maximizing TCP connection socket throughput, calcualtion of decode/encoding of messages, crtitical path
+## Part 1: The 'why, when and what' of perf in Python SDKs
 
-- Adam: How to define perf for your project? Throughput? What do you want to measure?
--   Pyamqp: message throughput, relates to above point about multiple scopes: very low-level, vs end-to-end
-- Adam: How to perf test your project: profiler, timeit
--   Pyamqp: demo for how we write tests, profiling the code, comparing functions using timeit etc
-
-- Anna: How to write performant python: lists/dicts vs classes, call methods vs if-statements: Perfomant syntax
--   Pyamqp: Use encoder/decoder as a working example of how we iterated on it for perf
--   Emphasis on being an iterative process - each time shaving off only miliseconds.
-
-- Adam: How to balance perf perf considerations with modular/readable code - lots of trade-offs!
--   Pyamqp: Show how unreadable the encode/decoder code become: this becomes difficult to maintain, onboard new devs. 
--   Can compensate be heavily commenting code to a certain extent.
--   Is the unreadable code worth it? For Pyamqp probably yes - if so, how can we mitigate the tradeoffs as much as possible?
--   For another - less performance-dependent project, maybe it's not worth it, and finding a balance between readable and performant code
--   is important.
-
-
-Second Session: Perf in Azure SDKs: 
-- End-to-end process for perf testing a new Azure SDK
--   What questions to ask? Is perf important for this lib? What do we want to measure? etc
--   Azure perf framework - what this offers and how to write tests for it
--   How can we apply the learnings for Session 1. to improve the perf of an SDK
-
-- CPython vs Pypy (Let's leave this for the second session to allow us both to research ;) )
--   Recap previous discussions on syntax choices and testing - what changes between CPython vs Pypy?
--   Are there syntax choices/structural desgins that work better in one vs the other
--   What does this mean for your project? i.e. how many people are actually using Pypy, and what for?
-
-
-
-# Performant Python - Part 1.
-
-## Why should we care about perf?
+### Why should we care about perf?
 - Python does not have a reputation as a 'performant' language.
 - Consensus that if you want high-performance, you would select an alternative language.
 
@@ -47,7 +11,7 @@ BUT
 - Just because performance may not be the primary reason a customer selects to work in Python, does not mean that it's inconsequential.
 - Depending on how it's used, Python can actually be performant - and not tapping into this can be a frustration for customers.
 
-## When should we care about perf?
+### When should we care about perf?
 
 As mentioned, Python can be utilized in performant ways - but to do so can often result in trade-offs regarding the style, structure and readability of the code, which we will revisit in more detail later.
 Making projects performant also has a significant dev/time cost associated with it. 
@@ -66,7 +30,7 @@ What factors should we use to determine whether a project, or part of a project,
 Examples include the Core pipeline, policy implementations.
 - Focus on areas of the code that will be used frequently during the running of an application - e.g. serializing and deserializing requests and responses. Due to the volume of usage, making these areas performant will have more impact on customers than fining tuning an expensive utility that is only run once during the construction of a Client.
 
-## What do a need to look at when making as SDK 'performant'?
+### What do a need to look at when making as SDK 'performant'?
 
 There are different aspects to performance, depending on the nature of the SDK, or project in question - Adam will dig into this more when he talks about defining what perf means in relation to a specific project, what actually needs to be measured, and how to measure that.
 
@@ -84,69 +48,95 @@ How can we make each function as efficient as possible?
 Can we separate out expensive parts to run fewer times?
 Can we restructure things to run fewer times?
 
-# Adams first section
+## Part 2: Assessing performance: Profiling and timit
 
 
-## How to write performant Python - an exploration of CPython
+## Part 3: The 'how' of perf in Python SDKs
 
 CPython - which we, and most people, use most of the time - is, naturally, built on C.
-Therefore, if we understand _how_ C is being used under the surface, we can write our Python code to best utilize C.
+Therefore, if we understand when and how C is being used under the surface, we can write our Python code to best utilize C.
+CPython even exposes the direct C-level APIs - however I would not necessarily recommend going this far for a couple of reasons:
+- Most of these C APIs are already being used within higher level APIs - so efficently using the higher level APIs will give the same perf with cleaner, more readible code.
+- These C APIs will not be compatible with PyPy and possibly other Python implementations. They're also subject to some platform variation.
+- Nobody will understand your code.
+
+Pythonic syntax is usually highly optimised for C.
+Of course this means that we Python devs should use the 'most pythonic' syntax for manipulating data. But what's also important is that our SDKs are designed in a way that customers can use Pythonic syntax to manipulate our APIs.
+
+### Question every line of code
+
+This topic is literally endless. We will touch on only a few things here.
+But the general mentality you will need when streamlining a code path for high performance is to question everything:
+- Is this method/object/line/operation even necessary?
+- Can it be replaced with a faster version?
+- Can it be refactored to run faster, or fewer times?
+- Can it be optimized for the majority case, possibly at the expense of the minority case?
 
 ### Use built in functions where possible
 
 These are often implemented in C, and therefore will be the fastest version.
-Alway check the docs for libraries like itertools before embarking on unique loop traversal - you may find an existing utility that will be faster.
-Functools 
+https://docs.python.org/3/library/functions.html#built-in-funcs
+Alway check the docs for libraries like [itertools](https://docs.python.org/3/library/itertools.html) before embarking on unique loop traversal - you may find an existing utility that will be faster.
 
 ### Variables
 
-- Make any regexs precompiled constants.
 - Python is faster looking up a local variable than a global one
+- Python is fastest when not having to look up a variable at all (i.e. hard coding index numbers, key names etc)
+- Pre compile any regexs
+- Pre instantiate any expensive static arrays/dictionaries/objects. Note that this will make startup times slower - so weigh the tradeoffs!
 
-### Working with str, bytes, bytearray and memoryview
+### Bytes, bytearray and memoryview
 
-While this presentation doesn't really cover memory usage, understanding how Python is allocation memory for C types can help us be more efficient.
+Bytes and Bytearray are both implementations of the [Buffer protocol](https://docs.python.org/3/c-api/buffer.html#bufferobjects), which is the Python wrapper around the memory array.
 
-
-
+Memoryview allows an object that supports the buffer protocol to be manipulated without making a copy of the underlying bytes with each operation.
 
 ### Classes vs Dicts vs Lists vs Tuples
 
-The underlying Python List object is implemented as a C array. This means that adding items to the front, or middle of a list is more expensive than the simply code implies.
-The keyword `in` is highly optimized in Python.
+The underlying Python List object is implemented as a C array. This means that adding items to the front, or middle of a list is more expensive than the simple Python code implies.
+Dictionaries are hash tables.
 
-#### Construction
 #### Attribute/data access
 
 - A dict lookup is faster than accessing an object attribute
 - Accessing a list index is faster than a dict lookup
 - In short - _every_ lookup is expensive - if using in loops, consider assinging to a variable beforehand.
 
-
 ### Method calls
 
 - Calling methods is expensive. For critical path - avoid moving code out into many 'utilities'
 
-### if-statements
+### Conditionals
+- There are multiple ways to implement 'switch' style behaviour depending on how many options you need and the frequency with which all the options will be used.
+- If using 'if-statements' - always use the first `if` to represent your highest traffic scenario.
+- If you have many options, with no obvious preference, using a list or dict lookup will be faster.
 
-### loops vs comprehensions
+### Loops and comprehensions
+- Comprehensions are highly optimized in Python, always try to structure a tight or long running loop in this way.
+- Try to avoid unnecessary lookups in a tight loop - use local variables, as few attribute lookups and method calls as possible.
 
 ### Checking and error handling
-
-The first iteration of the Pyamqp deserialization was written in a highly defensive - it was written to be very cautious that the payloads received were correctly encoded bytes according to the AMQP protocol specification. This meant that in the event of a failed deserialization, we received highly detailed error messages regarding the nature of the failure.
+- In Python we prefer EAFP instead of LBYL. This is largely because raising errors in considered inexpensive in Python. This is not always the case, and should be validated.
+- Important to ask whether raising is Expected or a Failure. How frequently is raising expected?
+- EAFP is useful because it makes the 'Success' scenario more efficient. However it can still be expensive for the 'Failure' scenario. So if failure is expected and frequent - it can be worth checking this and see if other patterns are better suited.
+- The first iteration of the Pyamqp deserialization was written in a highly defensive - it was written to be very cautious that the payloads received were correctly encoded bytes according to the AMQP protocol specification. This meant that in the event of a failed deserialization, we received highly detailed error messages regarding the nature of the failure.
 - This is not a bad approach for a generic AMQP client implementation that is being used with an unknown, possibly unreliable service endpoint. However this Client development is being driven by Azure services, which we can assume will likely have a valid payload 99.8% [citation needed] of the time. This means that we have a heavy overhead to protect us again what should be a very uncommon occurance.
 - If we get a nicely detailed error on why a message payload contained invalid bytes - what does this even mean to most customers? A customer of the EH/SB SDK may not know or even be aware of the AMQP protocol, let alone care about incorrect encoding.
 - If we remove all the defensive checking and error handling - and simply let errors raise to the surface under a generic failure (e.g. DeserializationError), this is enough to let customer know what part of the process failed. By including additional data - i.e. the payload bytes - on the error object, a support engineer should have everything they need to repro the error and debug it.
 - This reduces the deserialization lines of code hugely
 - Typical Pythonic coding using AFNP approach to errors - and for Python this is typically less expensive. But be open to a LBYL appraoch - there are situations where attempting and failing are more expensive.
 
-
 ### Python version
 - While it's not an important distinction for us, checking your perf results across multiple CPython versions can yeild interesting results - in particular the extremes, e.g. 3.6 vs 3.10.
+- Comparisons with PyPy? Stay tuned for the next installment...
 
 ### Iterative and experimental
 
-Improving Python perf is not a quick process and invovles many iterations. Each iteration may only shave a _tiny_ fraction off the run time. Most iterations will probably go backwards. What helped speed up one SDK, may not work for the next - so profile and iterate will always be a unique experience for each application and its parameters.
-However, the more you do it, the more you will instinctively use the most efficient tools.
+- Improving Python perf is not a quick process and invovles many iterations.
+- Often after a first profiling, low hanging fruit will become obvious, and improving these can result in some immediate gains, which may be 'sufficient'.
+- Each iteration after than may only shave a _tiny_ fraction off the run time. Some iterations will probably go backwards. What helped speed up one SDK, may not work for the next - so profile and iterate will always be a unique experience for each application and its parameters.
+- There's not really a endpoint. It can probably always get better, but knowing your metrics, and what baseline perf you need to achieve, should help you reach a state that is 'good enough'.
+- The more you do it, the more you will instinctively use the most efficient tools.
+- It's very easy for perf to regress over time as features are added. Making sure that perf is a feature of CI should help prevent this happening - or at least keep it transparent so that we aware of the tradeoffs we are making for new features.
 
-# Adams second part
+## Part 4: Balancing the trade-offs of perf-optimized code.
