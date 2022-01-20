@@ -86,6 +86,294 @@ Can we restructure things to run fewer times?
 
 # Adams first section
 
+## Performance metrics
+
+### Quiz: Which one(s) should be the performance metric?
+
+#### Case 1: Upload many local files to the Storage Blob
+
+What're the metrics we should use here?
+
+- A. Disk usage
+- B. Networking bandwidth usage
+- C. Memory usage
+- D. Latency
+- E. Throughput
+
+#### Case 2: Send 1 Billion Events to Event Hubs
+
+What're the metrics we should use here:
+
+- A. Disk Usage
+- B. Networking bandwidth usage
+- C. Memory usage
+- D. Latency
+- E. Throughput
+- F. How fast Adam is losing his hair
+
+### Identiyfing metrics
+
+There is no single answer, you may need to cover mutiple layers from end to end scenario to low level components to analyze the program.
+
+Common metrics:
+- Throughput: How much amount of work could be done in a certain period of time (e.g. 10 ops/seconds)
+- Response time/latency: How long it takes from performing a request until receiving the response (e.g. 40 ms)
+- Resource allocation: CPU/Memory/Disk/Network Bandwidth Usage (e.g. 10K memory)
+
+### Identifying success criteria
+
+- If there's already a baseline, it should be straightforward.
+- If there's no baseline, we could start defining our own baseline.
+
+> 1. Be aware of limitation of the service/hardware, check the service limit qutoas and limits, the capability of the hardware.
+
+> 2. Do control variables, be aware of the various configs that might be impacting your perf result.
+
+#### Case Study: Event Hubs and Python AMQP, Throughput is the top priority
+
+**Metrics:**
+
+- E2E Scenario
+  - Event Hub Sending and Receiving: 10k events/second, 100k bytes/second
+
+- Python AMQP
+  - Top layer:
+    - Sending and Receiving: 20k events/second, 200k bytes/second
+  - Middle layer:
+    - Connection/Session/Link: timed used to process an AMQP frame, 0.05 seconds per AMQP frame
+  - Bottom layer:
+    - Encode/Decode: timed used to encode/decode a Python object/AMQP frame, 0.05 seconds per AMQP frame or Python object
+    - Networking transport: 500k bytes/second
+
+**Sccuess criteria:**
+- match/surpass uAMQP in sending and receiving in the E2E Scenario
+
+### Summary
+
+- Identify the metrics, think about the E2E scenario
+- Identify the success criteria, what should be reasonble number?
+- Python AMQP: throughput and match/surpass uAMQP
+
+## Execute perf test, analyze and improve the performance
+
+### Tools for analyzing your program
+
+#### DIY
+
+```python
+import time
+
+start_time = time.time()
+
+for i in range(10000):
+    "-".join(str(n) for n in range(100))   
+
+end_time = time.time()
+perf = (end_time - start_time) / 10000
+print(perf)
+```
+
+#### timeit — Measure execution time of small code snippets
+
+> [This module provides a simple way to time small bits of Python code.](https://docs.python.org/3/library/timeit.html
+)
+
+```python
+import timeit
+timeit.timeit('"-".join(str(n) for n in range(100))', number=10000)
+# returns the time it takes to execute the main statement a number of time
+# 0.3018611848820001
+```
+
+- Python AMQP sample
+
+```python
+import logging
+import timeit
+
+
+def test_timeit_receive_message_batch():
+    SETUP_CODE = '''
+# settings
+receive_client = ReceiveClient(hostname, source, sas_auth, idle_timeout=10, link_credit=300)
+receive_client.open()
+while not receive_client.client_ready():
+    time.sleep(0.05)
+        '''
+
+    TEST_CODE = '''
+receive_client.receive_message_batch(max_batch_size=1000)
+    '''
+
+    time = timeit.timeit(TEST_CODE, setup=SETUP_CODE, number=20)
+    # we could use the time for future perf regression test
+    logging.info(time)
+
+
+if __name__ == '__main__':
+    test_timeit_receive_message_batch()
+```
+
+#### The Python Profilers
+
+> [cProfile and profile provide deterministic profiling of Python programs. A profile is a set of statistics that describes how often and for how long various parts of the program executed. ](https://docs.python.org/3/library/profile.html)
+
+
+```python
+import cProfile
+import re
+cProfile.run('re.compile("foo|bar")')
+```
+```bash
+      197 function calls (192 primitive calls) in 0.002 seconds
+
+Ordered by: standard name
+
+ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+     1    0.000    0.000    0.001    0.001 <string>:1(<module>)
+     1    0.000    0.000    0.001    0.001 re.py:212(compile)
+     1    0.000    0.000    0.001    0.001 re.py:268(_compile)
+     1    0.000    0.000    0.000    0.000 sre_compile.py:172(_compile_charset)
+     1    0.000    0.000    0.000    0.000 sre_compile.py:201(_optimize_charset)
+     4    0.000    0.000    0.000    0.000 sre_compile.py:25(_identityfunction)
+   3/1    0.000    0.000    0.000    0.000 sre_compile.py:33(_compile)
+```
+
+- To profile a standalone script and get the statistic
+
+```bash
+python -m cProfile [-o output_file] [-s sort_order] (-m module | myscript.py)
+```
+
+```python
+import pstats
+from pstats import SortKey
+p = pstats.Stats('restats')
+p.strip_dirs().sort_stats(-1).print_stats()
+```
+
+####  visualize cprofiler results
+
+[snakeviz](https://github.com/jiffyclub/snakeviz/)
+
+![snakevizgraph](adam_scripts/visualize-profiler.png)
+
+
+### Case study: Python AMQP Producer Perf Improvement
+
+#### 1. Use Python cprofiler + snakeviz find find out bottleneck
+
+![pyamqpprofilerresult](adam_scripts/pyamqp-visualize-profiler.png)
+
+**encode_binary seems to be our bottleneck!**
+
+
+#### 2. Analyze where is the bottleneck
+
+Analyze the lines of code that might be the bottleneck
+
+```python
+
+def _construct(byte, construct):
+    # type: (bytes, bool) -> bytes
+    return byte if construct else b''
+
+def encode_binary(output, value, with_constructor=True, use_smallest=True):
+    # type: (bytes, Union[bytes, bytearray], bool, bool)
+    """
+    <encoding name="vbin8" code="0xa0" category="variable" width="1" label="up to 2^8 - 1 octets of binary data"/>
+    <encoding name="vbin32" code="0xb0" category="variable" width="4" label="up to 2^32 - 1 octets of binary data"/>
+    """
+    length = len(value)
+    if use_smallest and length <= 255:
+        output += _construct(ConstructorBytes.binary_small, with_constructor)
+        output += struct.pack('>B', length)
+        return output + value
+    try:
+        output += _construct(ConstructorBytes.binary_large, with_constructor)
+        output += struct.pack('>L', length)
+        return output + value
+    except struct.error:
+        raise ValueError("Binary data to long to encode")
+```
+
+#### 3. Use timeit to compare different implementations
+
+```python
+import timeit
+
+def test_bytes():
+    SETUP_CODE_bytes = '''
+output = b""
+    '''
+
+    TEST_CODE_bytes = '''
+for _ in range(100):
+    output += b'a'
+    '''
+    time_bytes = timeit.timeit(TEST_CODE_bytes, setup=SETUP_CODE_bytes, number=1000)
+    print(time_bytes)
+
+
+def test_bytearry():
+    SETUP_CODE_bytearry = '''
+output = bytearray()
+    '''
+
+    TEST_CODE_bytearry = '''
+for _ in range(100):
+    output.extend(b'a')
+    '''
+    time_bytearry = timeit.timeit(TEST_CODE_bytearry, setup=SETUP_CODE_bytearry, number=1000)
+    print(time_bytearry)
+
+
+def test_bytesio():
+    SETUP_CODE_bytesio = '''
+import io
+bytesio = io.BytesIO(b"")
+    '''
+    TEST_CODE_bytesio = '''
+for _ in range(100):
+    bytesio.write(b'a')
+    '''
+    time_bytesio = timeit.timeit(TEST_CODE_bytesio, setup=SETUP_CODE_bytesio, number=1000)
+    print(time_bytesio)
+
+
+test_bytes()
+test_bytearry()
+test_bytesio()
+```
+
+#### 4. Validate the improvement!
+
+- bytearry to replace bytes
+
+```python
+def encode_binary(output, value, with_constructor=True, use_smallest=True):
+    # type: (bytearray, Union[bytes, bytearray], bool, bool) -> None
+    """
+    <encoding name="vbin8" code="0xa0" category="variable" width="1" label="up to 2^8 - 1 octets of binary data"/>
+    <encoding name="vbin32" code="0xb0" category="variable" width="4" label="up to 2^32 - 1 octets of binary data"/>
+    """
+    length = len(value)
+    if use_smallest and length <= 255:
+        output.extend(_construct(ConstructorBytes.binary_small, with_constructor))
+        output.extend(struct.pack('>B', length))
+        output.extend(value)
+        return
+    try:
+        output.extend(_construct(ConstructorBytes.binary_large, with_constructor))
+        output.extend(struct.pack('>L', length))
+        output.extend(value)
+    except struct.error:
+        raise ValueError("Binary data to long to encode")
+```
+
+- run perf and compare with the previous implementation
+
+![improvevalidation](adam_scripts/improvement-validation.png)
 
 ## How to write performant Python - an exploration of CPython
 
@@ -150,3 +438,100 @@ Improving Python perf is not a quick process and invovles many iterations. Each 
 However, the more you do it, the more you will instinctively use the most efficient tools.
 
 # Adams second part
+
+## Performance vs Maintenance
+
+> "All problems in computer science can be solved by another level of indirection." [David Wheeler]
+
+> "Most performance problems in computer science can be solved by removing a layer of indirection" [unknown]
+
+
+### trade-offs
+
+- Indirection Pros:
+    - modular/decouple
+    - encapsulate detail/complexity
+    - easy to maintain/extend/read
+
+- Indirection Cons:
+    - performance degradation: additional object creation/method call
+    - "An often cited corollary to this is, "...except for the problem of too many layers of indirection."
+
+
+#### Case Study: Python AMQP Encoder
+
+
+- Encoder -- current implementation
+```python
+# _encode.py
+
+_ENCODE_MAP = {
+    None: encode_unknown,
+    AMQPTypes.null: encode_null,
+    AMQPTypes.boolean: encode_boolean,
+    AMQPTypes.ubyte: encode_ubyte,
+    AMQPTypes.byte: encode_byte,
+    # more types
+}
+
+def encode_value(output, value, **kwargs):
+    # type: (bytearray, Any, Any) -> None
+    try:
+        _ENCODE_MAP[value[TYPE]](output, value[VALUE], **kwargs)
+    except (KeyError, TypeError):
+        encode_unknown(output, value, **kwargs)
+
+def encode_null(output, *args, **kwargs):  # pylint: disable=unused-argument
+    # type: (bytearray, Any, Any) -> None
+    """
+    encoding code="0x40" category="fixed" width="0" label="the null value"
+    """
+    output.extend(ConstructorBytes.null)
+
+
+if __name__ == '__main__':
+    encode.encode_value(output, {"TYPE": "NULL", "VALUE": None})
+```
+
+- Alternatively
+
+```python
+
+def get_encode_method_as_per_amqp_type(amqp_type):
+    if amqp_type == None:
+        return encode_null
+    elif amqp_type == AMQPType.boolean:
+        return encode_boolean
+
+def encode_value(output, value, **kwargs):
+    encode_method = get_encode_method_as_per_amqp_type(value[TYPE])
+    return encode_method(output, value[VALUE], **kwargs)
+
+if __name__ == '__main__':
+    encode.encode_value(output, {"TYPE": "NULL", "VALUE": None})
+```
+
+- Let's add some doc to our current implementation
+
+```python
+# _encode.py
+
+def encode_value(output, value, **kwargs):
+    # type: (bytearray, Any, Any) -> None
+    # value could be dic with key being the amqp type information, value being the python object
+    try:
+        # we look into the _ENCODE_MAP to retrieve the corresponding encode method for the input AMQP Type wnich is value[TYPE]
+        # and then pass the ojbect to be encoded which is value[VALUE] into the encode method
+        _ENCODE_MAP[value[TYPE]](output, value[VALUE], **kwargs)
+    except (KeyError, TypeError):
+        # if value doesn't contain AMQP Type information, we encode based on the python object type
+        encode_unknown(output, value, **kwargs)
+
+```
+
+### Summary
+
+- Is the unreadable code worth it?
+  - For Pyamqp probably yes - if so, how can we mitigate the tradeoffs as much as possible?
+    - Can compensate be heavily commenting code to a certain extent.
+  - For another less performance-dependent project, maybe it's not worth it, and finding a balance between readable and performant code is important.
