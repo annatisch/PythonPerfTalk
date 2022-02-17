@@ -11,7 +11,7 @@ import logging
 from typing import List, Union, Tuple, Dict, Callable  # pylint: disable=unused-import
 
 
-from .message import Message, Header, Properties
+from pyamqp2.message import Message, Header, Properties
 
 _LOGGER = logging.getLogger(__name__)
 _HEADER_PREFIX = memoryview(b'AMQP')
