@@ -437,8 +437,9 @@ Dictionaries are hash tables.
 
 > "Most performance problems in computer science can be solved by removing a layer of indirection" [unknown]
 
+We could add layers of abstraction to make the problems easier to resolve.
 
-### trade-offs
+### trade-offs between performance and extendability/maintainability
 
 - Indirection Pros:
     - modular/decouple
@@ -453,18 +454,11 @@ Dictionaries are hash tables.
 #### Case Study: Python AMQP Encoder
 
 
-- Encoder -- current implementation
+- Encoder -- current optimized implementation
+
+
 ```python
 # _encode.py
-
-_ENCODE_MAP = {
-    None: encode_unknown,
-    AMQPTypes.null: encode_null,
-    AMQPTypes.boolean: encode_boolean,
-    AMQPTypes.ubyte: encode_ubyte,
-    AMQPTypes.byte: encode_byte,
-    # more types
-}
 
 def encode_value(output, value, **kwargs):
     # type: (bytearray, Any, Any) -> None
@@ -472,6 +466,7 @@ def encode_value(output, value, **kwargs):
         _ENCODE_MAP[value[TYPE]](output, value[VALUE], **kwargs)
     except (KeyError, TypeError):
         encode_unknown(output, value, **kwargs)
+
 
 def encode_null(output, *args, **kwargs):  # pylint: disable=unused-argument
     # type: (bytearray, Any, Any) -> None
@@ -480,12 +475,23 @@ def encode_null(output, *args, **kwargs):  # pylint: disable=unused-argument
     """
     output.extend(ConstructorBytes.null)
 
-
 if __name__ == '__main__':
     encode.encode_value(output, {"TYPE": "NULL", "VALUE": None})
 ```
 
-- Alternatively
+```python
+# encode jump table
+_ENCODE_MAP = {
+    None: encode_unknown,
+    AMQPTypes.null: encode_null,
+    AMQPTypes.boolean: encode_boolean,
+    AMQPTypes.ubyte: encode_ubyte,
+    AMQPTypes.byte: encode_byte,
+    # more types...
+}
+```
+
+- Alternatively -- an unoptimized implementation
 
 ```python
 
@@ -494,36 +500,73 @@ def get_encode_method_as_per_amqp_type(amqp_type):
         return encode_null
     elif amqp_type == AMQPType.boolean:
         return encode_boolean
+    elif amqp_type == AMQPType.short:
+        return encode_short
+    elif amqp_type == AMQPType.ushort:
+        return encode_ushort
+    elif amqp_type == AMQPType.int:
+        return encode_int
+    elif amqp_type == AMQPType.uint:
+        return encode_int
+    elif amqp_type == AMQPType.long:
+        return encode_long
+    elif amqp_type == AMQPType.ulong:
+        return encode_ulong
+    elif amqp_type == AMQPType.float:
+        return encode_float
+    # more elif...
 
 def encode_value(output, value, **kwargs):
-    encode_method = get_encode_method_as_per_amqp_type(value[TYPE])
-    return encode_method(output, value[VALUE], **kwargs)
+    amqp_type = value[TYPE]
+    amqp_value = value[VALUE]
+    encode_method = get_encode_method_as_per_amqp_type(amqp_type)
+    return encode_method(output, amqp_value, **kwargs)
 
 if __name__ == '__main__':
     encode.encode_value(output, {"TYPE": "NULL", "VALUE": None})
 ```
 
-- Let's add some doc to our current implementation
+- Let's add some comments to our current implementation
 
 ```python
 # _encode.py
 
 def encode_value(output, value, **kwargs):
     # type: (bytearray, Any, Any) -> None
-    # value could be dic with key being the amqp type information, value being the python object
+    """
+    Enocde an AMQP value to bytes and append bytes to the output bytearray.
+
+    :param bytearray output: The bytearray to which the encoded bytes will be appened.
+    :param any value: The AMQP value to be encoded. This could be a dictionary
+     with key being the amqp type information, value being the Python object
+     like {"TYPE": "STRING", "VALUE": "test string"} or it could be of Any Python
+     object and the AMQP type information will be inferred by Python types.
+    :rtype: None
+    """
     try:
-        # we look into the _ENCODE_MAP to retrieve the corresponding encode method for the input AMQP Type wnich is value[TYPE]
-        # and then pass the ojbect to be encoded which is value[VALUE] into the encode method
+        # 1. Get the encoding method for AMQP type "value[TYPE]" in _ENCODE_MAP
+        # 2. Pass the Python object "value[VALUE]" to the encode method
         _ENCODE_MAP[value[TYPE]](output, value[VALUE], **kwargs)
     except (KeyError, TypeError):
-        # if value doesn't contain AMQP Type information, we encode based on the python object type
+        # If "value" doesn't contain AMQP type,
+        # we infer the AMQP type by Python type info and do encoding.
         encode_unknown(output, value, **kwargs)
-
 ```
 
+- How to improve furuther? remove more layers of abstractions? -- `encode_payload_expanded`
+
 ### Summary
+
+- There're plenty of design principles:
+  - KISS: Keep it simplie and stupid
+  - DRY: Do not repeat yourself
+  - SoC: Separation of concerns
+  - PEP20 - The Zen of Python
+
+- However, we might break them if needed...
 
 - Is the unreadable code worth it?
   - For Pyamqp probably yes - if so, how can we mitigate the tradeoffs as much as possible?
     - Can compensate be heavily commenting code to a certain extent.
+    - providing samples for understanding
   - For another less performance-dependent project, maybe it's not worth it, and finding a balance between readable and performant code is important.
